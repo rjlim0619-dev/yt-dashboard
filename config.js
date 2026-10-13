@@ -3,5 +3,5 @@
 // and Google only accepts sign-ins from the origins you allow (your GitHub Pages URL).
 // NEVER put a client SECRET or API key with billing in this file.
 window.DASH_CONFIG = {
-  CLIENT_ID: "PASTE_YOUR_CLIENT_ID.apps.googleusercontent.com",
+  CLIENT_ID: "186708591977-llib6k5tj7cou099je55ni911n637400.apps.googleusercontent.com",
 };

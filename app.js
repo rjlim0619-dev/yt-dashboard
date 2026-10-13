@@ -71,7 +71,7 @@
   const yt = (path, p) => call(`https://www.googleapis.com/youtube/v3/${path}`, p);
   const ya = (p) => call("https://youtubeanalytics.googleapis.com/v2/reports", { ids: "channel==MINE", ...p });
 
-  const TOTALS = "views,estimatedMinutesWatched,averageViewDuration,subscribersGained,subscribersLost,likes,comments";
+  const TOTALS = "views,estimatedMinutesWatched,averageViewDuration,averageViewPercentage,subscribersGained,subscribersLost,likes,comments";
 
   async function fetchLive(days) {
     const end = new Date();
@@ -160,6 +160,7 @@
     const totals = {
       views: sum("views"), estimatedMinutesWatched: sum("estimatedMinutesWatched"),
       averageViewDuration: Math.round(sum("averageViewDuration") / days),
+      averageViewPercentage: 46.8,
       subscribersGained: sum("subscribersGained"), subscribersLost: sum("subscribersLost"),
       likes: sum("likes"), comments: sum("comments"),
     };
@@ -232,6 +233,7 @@
         <h1><a href="${esc(c.url)}"${linkAttrs()}>${esc(c.title)}</a></h1>
         <p>${esc(c.handle)}</p>
       </div>
+      <div class="orb-wrap"><canvas class="orb" id="orb"></canvas><div class="orb-label">CORE ONLINE</div></div>
       <div class="ch-stats">
         <div class="ch-stat"><b data-n="${c.subs ?? ""}">${c.subs == null ? "HIDDEN" : "0"}</b><span>Subscribers</span></div>
         <div class="ch-stat"><b data-n="${c.views}">0</b><span>Lifetime views</span></div>
@@ -240,6 +242,7 @@
     document.querySelectorAll("#channel b[data-n]").forEach((b) => {
       if (b.dataset.n !== "") countUp(b, +b.dataset.n, num);
     });
+    startOrb($("#orb"));
   }
 
   function delta(cur, prev) {
@@ -423,11 +426,285 @@
 
   function render(d) {
     renderChannel(d.channel);
+    renderTicker(d);
     renderKpis(d.totals, d.prev, d.daily);
+    renderGauges(d);
+    renderTerm(d);
     renderDaily(d.daily);
     renderTraffic(d.traffic);
     renderTop(d.top);
     renderUploads(d.recent);
+  }
+
+
+  // ================= v3: ticker =================
+  function pct(cur, prev) {
+    if (!prev || cur == null) return null;
+    const p = ((cur - prev) / Math.abs(prev)) * 100;
+    return isFinite(p) ? p : null;
+  }
+  function renderTicker(d) {
+    const t = d.totals, p = d.prev;
+    const net = (o) => (o.subscribersGained || 0) - (o.subscribersLost || 0);
+    const items = [
+      ["SUBSCRIBERS", d.channel.subs == null ? "HIDDEN" : num(d.channel.subs), null],
+      ["VIEWS", num(t.views), pct(t.views, p.views)],
+      ["WATCH HRS", hours(t.estimatedMinutesWatched), pct(t.estimatedMinutesWatched, p.estimatedMinutesWatched)],
+      ["AVG DURATION", dur(t.averageViewDuration), pct(t.averageViewDuration, p.averageViewDuration)],
+      ["NET SUBS", (net(t) > 0 ? "+" : "") + num(net(t)), pct(net(t), net(p))],
+      ["LIKES", num(t.likes), pct(t.likes, p.likes)],
+      ["COMMENTS", num(t.comments), pct(t.comments, p.comments)],
+      ["LIFETIME VIEWS", num(d.channel.views), null],
+      ["VIDEOS", num(d.channel.videos), null],
+      ["WINDOW", `${state.days}D`, null],
+    ];
+    const html = items.map(([k, v, c]) => {
+      const ch = c == null ? "" : `<i class="${c >= 0 ? "up" : "down"}">${c >= 0 ? "▲" : "▼"}${Math.abs(c).toFixed(1)}%</i>`;
+      return `<span>${k}<b>${esc(v)}</b>${ch}</span>`;
+    }).join("");
+    $("#ticker").innerHTML = html + html;
+  }
+
+  // ================= v3: health gauges =================
+  function renderGauges(d) {
+    const t = d.totals, p = d.prev;
+    const views = t.views || 0;
+    const engagement = views ? ((t.likes || 0) + (t.comments || 0)) / views * 100 : 0;
+    const net = (t.subscribersGained || 0) - (t.subscribersLost || 0);
+    const conv = views ? net / views * 1000 : 0;
+    const retention = t.averageViewPercentage ?? null;
+    const growth = pct(t.views, p.views);
+    const G = [
+      { label: "Engagement", val: engagement, fmt: engagement.toFixed(1), unit: "%", fill: Math.min(1, engagement / 10), color: C.cyan, rate: engagement >= 4 ? "good" : engagement >= 2 ? "ok" : "low" },
+      { label: "Sub conversion", val: conv, fmt: conv.toFixed(1), unit: "/1K VIEWS", fill: Math.max(0, Math.min(1, conv / 20)), color: C.lime, rate: conv >= 8 ? "good" : conv >= 3 ? "ok" : "low" },
+      { label: "Retention", val: retention, fmt: retention == null ? "–" : retention.toFixed(0), unit: "% WATCHED", fill: retention == null ? 0 : Math.min(1, retention / 100), color: C.magenta, rate: retention == null ? "ok" : retention >= 45 ? "good" : retention >= 30 ? "ok" : "low" },
+      { label: "Momentum", val: growth, fmt: growth == null ? "–" : (growth >= 0 ? "+" : "") + growth.toFixed(0), unit: "% VS PREV", fill: growth == null ? 0 : Math.max(0, Math.min(1, (growth + 50) / 100)), color: C.violet, rate: growth == null ? "ok" : growth >= 5 ? "good" : growth >= -5 ? "ok" : "low" },
+    ];
+    const R = 48, CIRC = 2 * Math.PI * R;
+    const word = { good: "OPTIMAL", ok: "STABLE", low: "NEEDS BOOST" };
+    $("#gauges").innerHTML = G.map((g) => `
+      <div class="gauge">
+        <svg viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="ticks" cx="60" cy="60" r="57"/>
+          <circle class="track" cx="60" cy="60" r="${R}"/>
+          <circle class="arc" cx="60" cy="60" r="${R}" stroke="${g.color}" style="stroke-dasharray:${CIRC};stroke-dashoffset:${CIRC};filter:drop-shadow(0 0 6px ${g.color})" data-off="${CIRC * (1 - g.fill)}"/>
+          <circle class="inner" cx="60" cy="60" r="36" stroke="${g.color}" opacity=".45"/>
+          <text class="gv" x="60" y="62" text-anchor="middle">${esc(g.fmt)}</text>
+          <text class="gu" x="60" y="77" text-anchor="middle">${esc(g.unit)}</text>
+        </svg>
+        <div class="gl">${g.label}</div>
+        <div class="gs ${g.rate}">● ${word[g.rate]}</div>
+      </div>`).join("");
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      document.querySelectorAll("#gauges .arc").forEach((a) => { a.style.strokeDashoffset = a.dataset.off; });
+    }));
+  }
+
+  // ================= v3: insight terminal =================
+  let termRun = 0;
+  function renderTerm(d) {
+    const run = ++termRun;
+    const box = $("#term");
+    box.innerHTML = "";
+    const t = d.totals, p = d.prev;
+    const daily = d.daily || [];
+    const now = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
+    const lines = [];
+    const L = (...parts) => lines.push(parts);
+    L(["p", `[${now()}] `], ["w", "SYNC COMPLETE"], ["", ` · ${state.days}D WINDOW · ${daily.length} DATA POINTS`]);
+    if (daily.length) {
+      const peak = daily.reduce((a, r) => (r.views > a.views ? r : a), daily[0]);
+      const pd = new Date(peak.day + "T00:00:00").toLocaleDateString("en", { month: "short", day: "numeric", weekday: "short" }).toUpperCase();
+      L(["k", "› PEAK DAY      "], ["w", pd], ["", ` · ${num(peak.views)} views`]);
+      L(["k", "› DAILY AVG     "], ["w", `${num((t.views || 0) / daily.length)} views`], ["", ` · ${hours((t.estimatedMinutesWatched || 0) / daily.length)} hrs watched`]);
+      const half = Math.floor(daily.length / 2);
+      if (half >= 2) {
+        const a = daily.slice(0, half).reduce((x, r) => x + r.views, 0) / half;
+        const b = daily.slice(half).reduce((x, r) => x + r.views, 0) / (daily.length - half);
+        const tr = a ? ((b - a) / a) * 100 : 0;
+        L(["k", "› TRAJECTORY    "], [tr >= 0 ? "g" : "r", `${tr >= 0 ? "ACCELERATING ▲" : "DECELERATING ▼"} ${Math.abs(tr).toFixed(1)}%`], ["", " (2nd half vs 1st half)"]);
+      }
+    }
+    const g = pct(t.views, p.views);
+    if (g != null) L(["k", "› VS PREV WINDOW "], [g >= 0 ? "g" : "r", `${g >= 0 ? "+" : ""}${g.toFixed(1)}% views`]);
+    if (d.top?.length && t.views) {
+      const top = d.top[0];
+      L(["k", "› TOP SIGNAL    "], ["w", `"${top.title}"`], ["", ` · ${((top.views / t.views) * 100).toFixed(1)}% of all views`]);
+    }
+    if (d.traffic?.length) {
+      const tot = d.traffic.reduce((a, r) => a + r.views, 0) || 1;
+      const tr = d.traffic[0];
+      L(["k", "› PRIMARY VECTOR"], ["w", ` ${TRAFFIC[tr.insightTrafficSourceType] || tr.insightTrafficSourceType}`], ["", ` · ${((tr.views / tot) * 100).toFixed(1)}%`]);
+    }
+    const net = (t.subscribersGained || 0) - (t.subscribersLost || 0);
+    if (daily.length) L(["k", "› SUB VELOCITY  "], [net >= 0 ? "g" : "r", `${net >= 0 ? "+" : ""}${(net / daily.length).toFixed(1)} / day`], ["", ` · ${num(t.subscribersGained)} gained, ${num(t.subscribersLost)} lost`]);
+    if (d.recent?.length) {
+      const best = d.recent.reduce((a, v) => (v.views > a.views ? v : a), d.recent[0]);
+      L(["k", "› BEST RECENT   "], ["w", `"${best.title}"`], ["", ` · ${num(best.views)} views`]);
+    }
+    const eng = t.views ? ((t.likes || 0) + (t.comments || 0)) / t.views * 100 : 0;
+    L(["k", "› RECOMMENDATION "], ["a", eng < 3 ? "Ask viewers to like/comment — engagement is below 3%." : g != null && g < 0 ? "Views dipped. Try re-sharing your top signal video." : "Momentum is healthy. Keep your upload rhythm."]);
+    L(["p", `[${now()}] `], ["g", "ALL SYSTEMS NOMINAL"]);
+
+    const cursor = document.createElement("span");
+    cursor.className = "cur";
+    if (REDUCED) {
+      lines.forEach((parts) => {
+        const ln = document.createElement("div"); ln.className = "ln";
+        parts.forEach(([c, tx]) => { const sp = document.createElement("span"); sp.className = c; sp.textContent = tx; ln.appendChild(sp); });
+        box.appendChild(ln);
+      });
+      box.appendChild(cursor);
+      return;
+    }
+    (async () => {
+      for (const parts of lines) {
+        if (run !== termRun) return;
+        const ln = document.createElement("div"); ln.className = "ln";
+        box.appendChild(ln);
+        ln.appendChild(cursor);
+        for (const [c, tx] of parts) {
+          const sp = document.createElement("span"); sp.className = c;
+          ln.insertBefore(sp, cursor);
+          for (let i = 0; i < tx.length; i += 3) {
+            if (run !== termRun) return;
+            sp.textContent = tx.slice(0, i + 3);
+            await sleep(8);
+          }
+        }
+        box.scrollTop = box.scrollHeight;
+        await sleep(120);
+      }
+    })();
+  }
+
+  // ================= v3: hologram core (3D point sphere) =================
+  let orbRAF = 0;
+  function startOrb(canvas) {
+    cancelAnimationFrame(orbRAF);
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const W = canvas.clientWidth || 150, H = canvas.clientHeight || 120;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const N = 220, pts = [];
+    for (let i = 0; i < N; i++) {
+      const y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(1 - y * y), th = Math.PI * (3 - Math.sqrt(5)) * i;
+      pts.push([Math.cos(th) * r, y, Math.sin(th) * r]);
+    }
+    const R = Math.min(W, H) * 0.36, cx = W / 2, cy = H / 2 - 4;
+    let a = 0;
+    const draw = () => {
+      if (!canvas.isConnected) return;
+      ctx.clearRect(0, 0, W, H);
+      a += 0.008;
+      const ca = Math.cos(a), sa = Math.sin(a), tilt = 0.45, ct = Math.cos(tilt), st = Math.sin(tilt);
+      // orbit rings
+      ctx.strokeStyle = "rgba(0,229,255,.25)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.35, R * 0.38, -0.25, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = "rgba(255,43,214,.22)";
+      ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.2, R * 0.3, 0.5 + a * 0.6, 0, Math.PI * 2); ctx.stroke();
+      for (const [x, y, z] of pts) {
+        const x1 = x * ca - z * sa, z1 = x * sa + z * ca;
+        const y2 = y * ct - z1 * st, z2 = y * st + z1 * ct;
+        const depth = (z2 + 1) / 2;
+        ctx.fillStyle = `rgba(${Math.round(0 + 255 * (1 - depth) * 0.4)},${Math.round(229 * depth + 60)},255,${0.15 + depth * 0.85})`;
+        const s = 0.6 + depth * 1.4;
+        ctx.fillRect(cx + x1 * R - s / 2, cy + y2 * R - s / 2, s, s);
+      }
+      // core glow
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 0.9);
+      g.addColorStop(0, "rgba(0,229,255,.35)"); g.addColorStop(1, "rgba(0,229,255,0)");
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 0.9, 0, Math.PI * 2); ctx.fill();
+      // orbiting satellite
+      const sx = cx + Math.cos(a * 3) * R * 1.35, sy = cy + Math.sin(a * 3) * R * 0.38;
+      ctx.fillStyle = C.magenta; ctx.shadowColor = C.magenta; ctx.shadowBlur = 10;
+      ctx.beginPath(); ctx.arc(sx, sy, 2.4, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
+      if (!REDUCED) orbRAF = requestAnimationFrame(draw);
+    };
+    draw();
+  }
+
+  // ================= v3: particle network, cursor glow, panel tilt =================
+  function startFx() {
+    const cv = $("#fx");
+    if (!cv || REDUCED) { cv?.remove(); return; }
+    const ctx = cv.getContext("2d");
+    let W, H, dpr, P = [];
+    const mouse = { x: -9999, y: -9999 };
+    const resize = () => {
+      dpr = Math.min(2, window.devicePixelRatio || 1);
+      W = innerWidth; H = innerHeight;
+      cv.width = W * dpr; cv.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const n = Math.round(Math.min(110, (W * H) / 16000));
+      P = Array.from({ length: n }, () => ({
+        x: Math.random() * W, y: Math.random() * H,
+        vx: (Math.random() - 0.5) * 0.35, vy: (Math.random() - 0.5) * 0.35,
+        r: Math.random() * 1.4 + 0.5, m: Math.random() < 0.12,
+      }));
+    };
+    resize();
+    addEventListener("resize", resize);
+    addEventListener("pointermove", (e) => { mouse.x = e.clientX; mouse.y = e.clientY; }, { passive: true });
+    addEventListener("pointerleave", () => { mouse.x = mouse.y = -9999; });
+    const LINK = 125;
+    const loop = () => {
+      if (document.hidden) { requestAnimationFrame(loop); return; }
+      ctx.clearRect(0, 0, W, H);
+      for (const p of P) {
+        const dx = mouse.x - p.x, dy = mouse.y - p.y, d2 = dx * dx + dy * dy;
+        if (d2 < 180 * 180) { p.vx += dx * 0.00002; p.vy += dy * 0.00002; }
+        p.vx *= 0.995; p.vy *= 0.995;
+        p.vx += (Math.random() - 0.5) * 0.01; p.vy += (Math.random() - 0.5) * 0.01;
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < 0) p.x = W; if (p.x > W) p.x = 0; if (p.y < 0) p.y = H; if (p.y > H) p.y = 0;
+      }
+      ctx.lineWidth = 1;
+      for (let i = 0; i < P.length; i++) {
+        const a = P[i];
+        for (let j = i + 1; j < P.length; j++) {
+          const b = P[j], dx = a.x - b.x, dy = a.y - b.y, d = dx * dx + dy * dy;
+          if (d < LINK * LINK) {
+            ctx.strokeStyle = `rgba(0,229,255,${(1 - Math.sqrt(d) / LINK) * 0.16})`;
+            ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+          }
+        }
+        const mx = a.x - mouse.x, my = a.y - mouse.y, md = mx * mx + my * my;
+        if (md < 170 * 170) {
+          ctx.strokeStyle = `rgba(255,43,214,${(1 - Math.sqrt(md) / 170) * 0.35})`;
+          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(mouse.x, mouse.y); ctx.stroke();
+        }
+      }
+      for (const p of P) {
+        ctx.fillStyle = p.m ? "rgba(255,43,214,.9)" : "rgba(0,229,255,.75)";
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+      }
+      requestAnimationFrame(loop);
+    };
+    loop();
+  }
+
+  function startPointerFx() {
+    if (REDUCED || !matchMedia("(hover: hover) and (pointer: fine)").matches) return;
+    document.body.classList.add("has-pointer");
+    const glow = $("#cursorGlow");
+    let last = null;
+    addEventListener("pointermove", (e) => {
+      glow.style.transform = `translate(${e.clientX}px, ${e.clientY}px)`;
+      const panel = e.target.closest?.(".panel");
+      if (last && last !== panel) { last.style.setProperty("--rx", "0deg"); last.style.setProperty("--ry", "0deg"); last.style.setProperty("--my", "-200px"); }
+      last = panel;
+      if (!panel) return;
+      const r = panel.getBoundingClientRect();
+      const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+      const k = r.height > 420 ? 1.2 : r.width > 600 ? 2 : 6;
+      panel.style.setProperty("--mx", `${e.clientX - r.left}px`);
+      panel.style.setProperty("--my", `${e.clientY - r.top}px`);
+      panel.style.setProperty("--ry", `${(px - 0.5) * k}deg`);
+      panel.style.setProperty("--rx", `${(0.5 - py) * k}deg`);
+    }, { passive: true });
   }
 
   // ================= UI state =================
@@ -589,6 +866,8 @@
 
   // ================= start =================
   startClock();
+  startFx();
+  startPointerFx();
   boot();
   show("welcome");
   setStatus();
